@@ -30,19 +30,19 @@ import subprocess
 import sys
 import time
 
-VERSION = "20240704"
+VERSION = "20240708"
 
 CMD_XMOUNT = "/usr/bin/xmount"
 CMD_KPARTX = "/usr/sbin/kpartx"
-CMD_PARTED = "/usr/sbin/parted"
 CMD_LSBLK = "/usr/bin/lsblk"
+CMD_BLKID = "/usr/sbin/blkid"
 CMD_MOUNT = "/usr/bin/mount"
 CMD_UMOUNT = "/usr/bin/umount"
 CMD_DMSETUP = "/usr/sbin/dmsetup"
 CMD_LOSETUP = "/usr/sbin/losetup"
 CMD_FUSERMOUNT = "/usr/bin/fusermount"
 
-IMAGEINFO_JSON_PATH = "~/.linimagemounter/image_info.json"
+IMAGEINFO_JSON_PATH = os.path.abspath(os.path.expanduser("~/.linimagemounter/image_info.json"))
 
 
 class MountInfo:
@@ -55,7 +55,7 @@ class MountInfo:
 
     def print_info(self) -> None:
         if self.mountable:
-            print(f"/dev/mapper/{self.device} -> /dev/{self.dm_name} is mounted on {self.mountpoint} as {self.filesystem} filesystem.")
+            print(f"/dev/mapper/{self.device} -> /dev/{self.dm_name} is mounted on {self.mountpoint} as {self.filesystem}.")
         else:
             print(f"/dev/mapper/{self.device} -> /dev/{self.dm_name} is not mountable.")
 
@@ -68,10 +68,10 @@ class ImageInfo:
         self.loopback_device = loopback_device
         self.mount_info = mount_info
 
-    def _mount_info_to_dict(self, obj: MountInfo) -> dict:
-        if isinstance(obj, MountInfo):
-            return obj.__dict__
-        raise TypeError(f"Object of type '{obj.__class__.__name__}' is not JSON serializable.")
+    def _mount_info_to_dict(self, mount_info: MountInfo) -> dict:
+        if isinstance(mount_info, MountInfo):
+            return mount_info.__dict__
+        raise TypeError(f"Object of type '{mount_info.__class__.__name__}' is not JSON serializable.")
 
     def _image_info_to_dict(self, image_info: ImageInfo) -> dict:
         if isinstance(image_info, ImageInfo):
@@ -141,7 +141,7 @@ class ImageInfo:
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="LinImageMounter", description="Mounts Linux disk image files for forensics on Linux.")
-    parser.add_argument("command", type=str, choices=["mount", "unmount"], help="Command to execute.")
+    parser.add_argument("command", type=str, choices=["mount", "unmount", "status"], help="Command to execute.")
     parser.add_argument("-i", "--image", type=str, default="", help="Path to the disk image file. Required for the 'mount' command. (Default: '')")
     parser.add_argument(
         "--mountpoint_base",
@@ -171,8 +171,12 @@ def platform_is_linux() -> bool:
     return platform.system() == "Linux"
 
 
+def check_root_privilege() -> bool:
+    return os.geteuid() == 0
+
+
 def check_dependencies() -> bool:
-    dependencies = (CMD_XMOUNT, CMD_KPARTX, CMD_PARTED, CMD_LSBLK, CMD_MOUNT, CMD_UMOUNT, CMD_DMSETUP, CMD_LOSETUP, CMD_FUSERMOUNT)
+    dependencies = (CMD_XMOUNT, CMD_KPARTX, CMD_LSBLK, CMD_BLKID, CMD_MOUNT, CMD_UMOUNT, CMD_DMSETUP, CMD_LOSETUP, CMD_FUSERMOUNT)
     check_results: list[bool] = []
     for dependency in dependencies:
         exist = os.path.isfile(dependency)
@@ -305,33 +309,26 @@ def run_lsblk(image_info: ImageInfo, sleeptime=2) -> bool:
     return True
 
 
-def run_parted(image_info: ImageInfo) -> bool:
-    debug_print("===== Run Parted =====")
+def run_blkid(image_info: ImageInfo) -> bool:
+    debug_print("===== Run Blkid =====")
+    success, result = run_cmd([CMD_BLKID])
+    if not success:
+        print("Failed to run blkid.")
+        return False
+
     for info in image_info.mount_info:
-        if info.mountable:
-            dm_path = os.path.join("/dev", info.dm_name)
-            success, result = run_cmd([CMD_PARTED, dm_path, "print"])
-            if not success:
-                print(f"Failed to run parted on {dm_path}.")
-                return False
-
-            for line in result.stdout.splitlines():
-                line = line.strip()
-                if len(line) > 0:
-                    fields = line.split()
-                    if fields[0] in ("Model:", "Disk", "Sector", "Disk flags:", "Number"):
-                        continue
-
-                    if fields[0] == "Partition":
-                        if fields[2] == "unknown":
-                            break
-
-                        continue
-
-                    info.mountable = True
-                    info.filesystem = line.split()[4]
+        for line in result.stdout.splitlines():
+            device = line.split(": ")[0]
+            device_info = line.split(": ")[1]
+            try:
+                if device.endswith(info.device):
+                    info.filesystem = {k: v.strip('"') for k, v in [field.split("=") for field in device_info.split()]}["TYPE"]
                     if info.filesystem.startswith("fat"):
                         info.filesystem = "vfat"
+                    break
+            except KeyError:
+                debug_print(f"'{line}' has no TYPE field.")
+                continue
 
     return True
 
@@ -383,7 +380,7 @@ def mount_image(image: str, mountpoint_base: str) -> bool:
     if not result:
         return False
 
-    result = run_parted(image_info)
+    result = run_blkid(image_info)
     if not result:
         return False
 
@@ -522,9 +519,25 @@ def unmount_image() -> bool:
     return True
 
 
+def check_status() -> bool:
+    image_info = ImageInfo(image="", mountpoint_base="", image_mountpoint="", loopback_device="", mount_info=[])
+    result = image_info.load_image_info(IMAGEINFO_JSON_PATH)
+    if not result:
+        return False
+
+    print("Current status:")
+    image_info.print_info()
+
+    return True
+
+
 def main() -> None:
     if not platform_is_linux():
         print("This script only supports Linux.")
+        sys.exit(1)
+
+    if not check_root_privilege():
+        print("This script requires root privilege.")
         sys.exit(1)
 
     if not check_dependencies():
@@ -544,6 +557,8 @@ def main() -> None:
         result = mount_image(args.image, args.mountpoint_base)
     elif args.command == "unmount":
         result = unmount_image()
+    elif args.command == "status":
+        result = check_status()
     else:
         print("Invalid command.")
         sys.exit(1)
