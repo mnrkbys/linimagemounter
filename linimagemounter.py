@@ -30,7 +30,7 @@ import subprocess
 import sys
 import time
 
-VERSION = "20240708"
+VERSION = "20240711"
 
 CMD_XMOUNT = "/usr/bin/xmount"
 CMD_KPARTX = "/usr/sbin/kpartx"
@@ -187,13 +187,13 @@ def check_dependencies() -> bool:
     return all(check_results)
 
 
-def run_cmd(cmd_line: list[str]) -> tuple[bool, subprocess.CompletedProcess]:
+def run_cmd(cmd_line: list[str]) -> subprocess.CompletedProcess:
     debug_print(" ".join(cmd_line))
     result = subprocess.run(cmd_line, capture_output=True, text=True, encoding="utf-8", check=False)
     debug_print(f"return code: {result.returncode}")
     debug_print(f"stdout: {result.stdout}")
     debug_print(f"stderr: {result.stderr}")
-    return result.returncode == 0, result
+    return result
 
 
 def run_xmount(image_info: ImageInfo) -> bool:
@@ -214,7 +214,7 @@ def run_xmount(image_info: ImageInfo) -> bool:
 
     xmount_cache_filename = os.path.splitext(os.path.basename(image_info.image))[0] + ".cache"
     xmount_cache_path = os.path.join(xmount_cache_dir, xmount_cache_filename)
-    if os.path.isfile(xmount_cache_path):
+    if not args.retain_cache and os.path.isfile(xmount_cache_path):
         os.remove(xmount_cache_path)
 
     # Check if the mountpoint exists and is not mounted
@@ -230,8 +230,8 @@ def run_xmount(image_info: ImageInfo) -> bool:
         return False
 
     # Mount the image
-    success, _ = run_cmd([CMD_XMOUNT, "--in", "ewf", image_info.image, "--out", "vmdk", "--cache", xmount_cache_path, image_info.image_mountpoint])
-    if not success or not os.path.ismount(image_info.image_mountpoint):
+    result = run_cmd([CMD_XMOUNT, "--in", "ewf", image_info.image, "--out", "vmdk", "--cache", xmount_cache_path, image_info.image_mountpoint])
+    if result.returncode != 0 or not os.path.ismount(image_info.image_mountpoint):
         print("Failed to run xmount.")
         return False
 
@@ -244,8 +244,8 @@ def run_kpartx(image_info: ImageInfo, sleeptime=3) -> bool:
     mounted_image_path = os.path.join(image_info.image_mountpoint, raw_image_filename)
     mount_info: list[MountInfo] = []
 
-    success, result = run_cmd([CMD_KPARTX, "-av", mounted_image_path])
-    if not success:
+    result = run_cmd([CMD_KPARTX, "-av", mounted_image_path])
+    if result.returncode != 0:
         print("Failed to run kpartx.")
         return False
 
@@ -296,8 +296,8 @@ def run_lsblk(image_info: ImageInfo, sleeptime=2) -> bool:
     time.sleep(sleeptime)
     dev_map = _get_dev_map()
 
-    success, result = run_cmd([CMD_LSBLK, "--json"])
-    if not success:
+    result = run_cmd([CMD_LSBLK, "--json"])
+    if result.returncode != 0:
         print("Failed to run lsblk.")
         return False
 
@@ -311,8 +311,8 @@ def run_lsblk(image_info: ImageInfo, sleeptime=2) -> bool:
 
 def run_blkid(image_info: ImageInfo) -> bool:
     debug_print("===== Run Blkid =====")
-    success, result = run_cmd([CMD_BLKID])
-    if not success:
+    result = run_cmd([CMD_BLKID])
+    if result.returncode != 0:
         print("Failed to run blkid.")
         return False
 
@@ -349,8 +349,8 @@ def run_mount(image_info: ImageInfo) -> bool:
                 os.makedirs(device_mountpoint, exist_ok=True)
 
             mount_option = "rw" if args.read_write else "ro"
-            success, _ = run_cmd([CMD_MOUNT, "-t", info.filesystem, "-o", mount_option, dm_path, device_mountpoint])
-            if not success:
+            result = run_cmd([CMD_MOUNT, "-t", info.filesystem, "-o", mount_option, dm_path, device_mountpoint])
+            if result.returncode != 0 or not os.path.ismount(device_mountpoint):
                 print(f"Failed to mount {dm_path} to {device_mountpoint}.")
                 return False
 
@@ -404,8 +404,8 @@ def run_umount(image_info: ImageInfo) -> bool:
     debug_print("===== Run Umount =====")
     for info in image_info.mount_info:
         if info.mountpoint:
-            success, _ = run_cmd([CMD_UMOUNT, info.mountpoint])
-            if not success:
+            result = run_cmd([CMD_UMOUNT, info.mountpoint])
+            if result.returncode != 0:
                 print(f"Failed to unmount {info.mountpoint}.")
                 return False
 
@@ -417,8 +417,8 @@ def run_dmsetup_remove(image_info: ImageInfo) -> bool:
     reverse_mount_info = sorted(image_info.mount_info, key=lambda x: x.dm_name, reverse=True)
     for info in reverse_mount_info:
         device_map_path = os.path.join("/dev", info.dm_name)
-        success, _ = run_cmd([CMD_DMSETUP, "remove", device_map_path])
-        if not success:
+        result = run_cmd([CMD_DMSETUP, "remove", device_map_path])
+        if result.returncode != 0:
             print(f"Failed to remove device map {device_map_path}.")
             return False
 
@@ -428,8 +428,8 @@ def run_dmsetup_remove(image_info: ImageInfo) -> bool:
 def run_losetup_detach(image_info: ImageInfo) -> bool:
     debug_print("===== Run Losetup Detach =====")
     loopback_device_path = os.path.join("/dev", image_info.loopback_device)
-    success, _ = run_cmd([CMD_LOSETUP, "-d", loopback_device_path])
-    if not success:
+    result = run_cmd([CMD_LOSETUP, "-d", loopback_device_path])
+    if result.returncode != 0:
         print(f"Failed to detach loopback device {loopback_device_path}.")
         return False
 
@@ -438,8 +438,8 @@ def run_losetup_detach(image_info: ImageInfo) -> bool:
 
 def run_fusermount_unmount(image_info: ImageInfo) -> bool:
     debug_print("===== Run Fusermount Unmount =====")
-    success, _ = run_cmd([CMD_FUSERMOUNT, "-u", image_info.image_mountpoint])
-    if not success:
+    result = run_cmd([CMD_FUSERMOUNT, "-u", image_info.image_mountpoint])
+    if result.returncode != 0:
         print(f"Failed to unmount {image_info.image_mountpoint}.")
         return False
 
@@ -520,6 +520,10 @@ def unmount_image() -> bool:
 
 
 def check_status() -> bool:
+    if not os.path.exists(IMAGEINFO_JSON_PATH):
+        print("No image is mounted.")
+        return True
+
     image_info = ImageInfo(image="", mountpoint_base="", image_mountpoint="", loopback_device="", mount_info=[])
     result = image_info.load_image_info(IMAGEINFO_JSON_PATH)
     if not result:
