@@ -26,12 +26,12 @@ git clone https://github.com/mnrkbys/linimagemounter.git
 To mount a disk image, simply run:
 
 ```bash
-sudo python3 ./linimagemounter.py mount /path/to/your/image.E01
+sudo python3 ./linimagemounter.py mount -i /path/to/your/image.E01
 ```
 
 *Note 1: `/mnt/linimagemounter` is the default mount point. You can specify a different mount point if needed.*
 
-*Note 2: Mount-related information is saved in `~/.linimagemounter/image_info.json` (In many cases, saved in `/root/.linimagemounter/image_info.json`).*
+*Note 2: Mount-related information is saved in `~/.linimagemounter/linimagemounter.json` (In many cases, saved in `/root/.linimagemounter/linimagemounter.json`).*
 
 Check the current mounting status:
 
@@ -59,8 +59,8 @@ Contributions are encouraged! If you wish to contribute, please fork the reposit
 
 - LinImageMounter is based on `xmount`, and thus only raw DD and EWF (E01) disk images are supported.
 - Since LinImageMounter is designed to only mount Linux disk images, errors may occur when mounting disk images from other operating systems.
-- Currently, LinImageMounter supports mounting only one disk image at a time. Attempting to mount multiple images simultaneously will result in an error.
 - LinImageMounter depends on some Linux-specific commands and external tools for mounting disk images. Ensure that all necessary dependencies are installed on your system.
+- Logical volumes in a disk image that contain mounted logical volume names cannot be mounted.
 - Currently, LinImageMounter does NOT support LUKS, eCryptfs, software RAID (mdadm), and so on.
 
 ## Testing

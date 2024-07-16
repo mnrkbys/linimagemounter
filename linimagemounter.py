@@ -29,20 +29,9 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 
-VERSION = "20240712a"
-
-CMD_XMOUNT = "/usr/bin/xmount"
-CMD_KPARTX = "/usr/sbin/kpartx"
-CMD_LOSETUP = "/usr/sbin/losetup"
-CMD_LSBLK = "/usr/bin/lsblk"
-CMD_BLKID = "/usr/sbin/blkid"
-CMD_MOUNT = "/usr/bin/mount"
-CMD_UMOUNT = "/usr/bin/umount"
-CMD_DMSETUP = "/usr/sbin/dmsetup"
-CMD_FUSERMOUNT = "/usr/bin/fusermount"
-
-IMAGEINFO_JSON_PATH = os.path.abspath(os.path.expanduser("~/.linimagemounter/linimagemounter.json"))
+VERSION = "20240716"
 
 
 class MountInfo:
@@ -53,17 +42,14 @@ class MountInfo:
         self.mountpoint = mountpoint
         self.filesystem = filesystem
 
-    @staticmethod
-    def mount_info_to_dict(mount_info: MountInfo) -> dict:
-        if isinstance(mount_info, MountInfo):
-            return mount_info.__dict__
-        raise TypeError(f"Object of type '{mount_info.__class__.__name__}' is not JSON serializable.")
+    def convert_to_dict(self) -> dict:
+        return self.__dict__
 
-    def print_mounting(self) -> None:
+    def print_mounting(self, indent: int = 0) -> None:
         if self.mountable:
-            print(f"/dev/mapper/{self.device} -> /dev/{self.dm_name} is mounted on {self.mountpoint} as {self.filesystem}.")
+            print(" " * indent + f"/dev/mapper/{self.device} -> /dev/{self.dm_name} is mounted on {self.mountpoint} as {self.filesystem}.")
         else:
-            print(f"/dev/mapper/{self.device} -> /dev/{self.dm_name} is not mountable.")
+            print(" " * indent + f"/dev/mapper/{self.device} -> /dev/{self.dm_name} is not mountable.")
 
     def print_info(self, indent=0) -> None:
         print(" " * indent + f"Device: {self.device}")
@@ -90,11 +76,8 @@ class ImageInfo:
         self.xmount_cache_path = xmount_cache_path
         self.loopback_device = loopback_device
 
-    @staticmethod
-    def image_info_to_dict(image_info: ImageInfo) -> dict:
-        if isinstance(image_info, ImageInfo):
-            return image_info.__dict__
-        raise TypeError(f"Object of type '{image_info.__class__.__name__}' is not JSON serializable.")
+    def convert_to_dict(self) -> dict:
+        return self.__dict__
 
     def print_info(self, indent=0) -> None:
         print(" " * indent + f"Image: {self.image}")
@@ -105,24 +88,83 @@ class ImageInfo:
         print(" " * indent + f"Loopback Device: {self.loopback_device}")
 
 
-class LinImageMounter:
-    def __init__(self, mountpoint_base: str, image_info: list[ImageInfo], mount_info: list[MountInfo]) -> None:
+class LinImageMounterSession:
+    def __init__(self, mountpoint_base: str, image_info: list[ImageInfo], mount_info: list[MountInfo], session_id: str = "") -> None:
+        if session_id:
+            self.session_id = session_id
+        else:
+            self.session_id = uuid.uuid1()
         self.mountpoint_base = mountpoint_base
         self.image_info = image_info
         self.mount_info = mount_info
 
-    def linimagemounter_to_dict(self, linimagemounter: LinImageMounter) -> dict:
-        if isinstance(linimagemounter, LinImageMounter):
-            return {
-                "mountpoint_base": linimagemounter.mountpoint_base,
-                "image_info": [ImageInfo.image_info_to_dict(ii) for ii in linimagemounter.image_info],
-                "mount_info": [MountInfo.mount_info_to_dict(mi) for mi in linimagemounter.mount_info],
-            }
-        raise TypeError(f"Object of type '{linimagemounter.__class__.__name__}' is not JSON serializable.")
+    def convert_to_dict(self) -> dict:
+        return {
+            "session_id": str(self.session_id),
+            "mountpoint_base": self.mountpoint_base,
+            "image_info": [ImageInfo.convert_to_dict(ii) for ii in self.image_info],
+            "mount_info": [MountInfo.convert_to_dict(mi) for mi in self.mount_info],
+        }
 
-    def save_json(self, image_info_json_path: str) -> bool:
+    def print_info(self) -> None:
+        print(f"Session ID: {self.session_id}")
+        print(f"Mountpoint Base: {self.mountpoint_base}")
+        print("Image Info:")
+        for info in self.image_info:
+            info.print_info(indent=2)
+            print()
+        print("Mount Info:")
+        for info in self.mount_info:
+            info.print_info(indent=2)
+            print()
+
+    def print_mounting(self) -> None:
+        print(f"Session ID: {self.session_id}")
+        print(f"Mountpoint Base: {self.mountpoint_base}")
+        for mount_info in self.mount_info:
+            mount_info.print_mounting(indent=2)
+
+
+class LinImageMounterManager:
+    CMD_XMOUNT = "/usr/bin/xmount"
+    CMD_KPARTX = "/usr/sbin/kpartx"
+    CMD_LOSETUP = "/usr/sbin/losetup"
+    CMD_LSBLK = "/usr/bin/lsblk"
+    CMD_BLKID = "/usr/sbin/blkid"
+    CMD_MOUNT = "/usr/bin/mount"
+    CMD_UMOUNT = "/usr/bin/umount"
+    CMD_DMSETUP = "/usr/sbin/dmsetup"
+    CMD_FUSERMOUNT = "/usr/bin/fusermount"
+    IMAGEINFO_JSON_PATH = os.path.abspath(os.path.expanduser("~/.linimagemounter/linimagemounter.json"))
+
+    def __init__(self, sessions: list[LinImageMounterSession] | None = None) -> None:
+        if sessions is None:
+            self.sessions = []
+
+    def check_dependencies(self) -> bool:
+        dependencies = (
+            self.CMD_XMOUNT,
+            self.CMD_KPARTX,
+            self.CMD_LOSETUP,
+            self.CMD_LSBLK,
+            self.CMD_BLKID,
+            self.CMD_MOUNT,
+            self.CMD_UMOUNT,
+            self.CMD_DMSETUP,
+            self.CMD_FUSERMOUNT,
+        )
+        check_results: list[bool] = []
+        for dependency in dependencies:
+            exist = os.path.isfile(dependency)
+            if not exist:
+                print(f"Dependency not found: {dependency}")
+            check_results.append(exist)
+
+        return all(check_results)
+
+    def save_json(self, json_path: str) -> bool:
         try:
-            json_data_path = os.path.abspath(os.path.expanduser(image_info_json_path))
+            json_data_path = os.path.abspath(os.path.expanduser(json_path))
             json_data_dir = os.path.dirname(json_data_path)
             if os.path.isfile(json_data_dir):
                 print("JSON data directory is a file.")
@@ -130,7 +172,8 @@ class LinImageMounter:
 
             os.makedirs(json_data_dir, exist_ok=True)
 
-            mount_info_json = json.dumps(self, default=self.linimagemounter_to_dict, indent=4)
+            sessions_json = [session.convert_to_dict() for session in self.sessions]
+            mount_info_json = json.dumps(sessions_json, indent=4)
             with open(json_data_path, "w") as f:
                 f.write(mount_info_json)
 
@@ -141,32 +184,434 @@ class LinImageMounter:
         else:
             return True
 
-    def load_json(self, image_info_json_path: str) -> bool:
+    def load_json(self, json_path: str, ignore_failure: bool = False) -> bool:
         try:
-            with open(os.path.abspath(os.path.expanduser(image_info_json_path))) as f:
-                image_info_dict = json.load(f)
+            with open(os.path.abspath(os.path.expanduser(json_path))) as f:
+                sessions_json = json.load(f)
 
-            self.mountpoint_base = image_info_dict["mountpoint_base"]
-            self.image_info = [ImageInfo(**ii_dict) for ii_dict in image_info_dict["image_info"]]
-            self.mount_info = [MountInfo(**mi_dict) for mi_dict in image_info_dict["mount_info"]]
+            self.sessions: list[LinImageMounterSession] = []
+            for session in sessions_json:
+                image_info = [ImageInfo(**ii_dict) for ii_dict in session["image_info"]]
+                mount_info = [MountInfo(**mi_dict) for mi_dict in session["mount_info"]]
+                self.sessions.append(
+                    LinImageMounterSession(
+                        mountpoint_base=session["mountpoint_base"],
+                        image_info=image_info,
+                        mount_info=mount_info,
+                        session_id=session["session_id"],
+                    ),
+                )
 
         except OSError as e:
-            print(f"Failed to load image info JSON file: {e}")
+            if not ignore_failure:
+                print(f"Failed to load image info JSON file: {e}")
             return False
 
         else:
             return True
 
-    def print_info(self) -> None:
-        print(f"Mountpoint Base: {self.mountpoint_base}")
-        print("Image Info:")
-        for info in self.image_info:
-            info.print_info(indent=2)
-            print()
-        print("Mount Info:")
-        for info in self.mount_info:
-            info.print_info(indent=2)
-            print()
+    def mount_image(self, images: list[str], mountpoint_base: str) -> tuple[bool, LinImageMounterSession | None]:
+        image_info: list[ImageInfo] = []
+        for image in images:
+            image_path_hash = hashlib.sha1(image.encode()).hexdigest()
+            image_mountpoint = os.path.join(mountpoint_base, os.path.join("_images", image_path_hash))
+            image_info.append(
+                ImageInfo(
+                    image=image,
+                    image_path_hash=image_path_hash,
+                    image_mountpoint=image_mountpoint,
+                    xmount_image_path="",
+                    xmount_cache_path="",
+                    loopback_device="",
+                ),
+            )
+
+        lim_session = LinImageMounterSession(mountpoint_base=mountpoint_base, image_info=image_info, mount_info=[])
+
+        result = self._run_xmount(lim_session)
+        if not result:
+            return False, lim_session
+
+        result = self._run_kpartx(lim_session)
+        if not result:
+            return False, lim_session
+
+        result = self._run_loseup(lim_session)
+        if not result:
+            return False, lim_session
+
+        result = self._run_lsblk(lim_session)
+        if not result:
+            return False, lim_session
+
+        result = self._run_blkid(lim_session)
+        if not result:
+            return False, lim_session
+
+        result = self._run_mount(lim_session)
+        if not result:
+            return False, lim_session
+
+        self.load_json(self.IMAGEINFO_JSON_PATH, ignore_failure=True)
+        self.sessions.append(lim_session)
+
+        result = self.save_json(self.IMAGEINFO_JSON_PATH)
+        if not result:
+            return False, lim_session
+
+        print("Mounting info:")
+        for mount_info in lim_session.mount_info:
+            mount_info.print_mounting()
+        print("Mounting succeeded.")
+
+        return True, lim_session
+
+    def unmount_image(self) -> tuple[bool, LinImageMounterSession | None]:
+        lim_manager = LinImageMounterManager()
+        result = lim_manager.load_json(self.IMAGEINFO_JSON_PATH)
+        if not result:
+            return False, None
+
+        print("Mounting info:")
+        to_remove_sessions: list[int] = []
+        for session_number, session in enumerate(lim_manager.sessions):
+            if (not args.session_no or (session_number + 1 in args.session_no)) and (not args.session_id or (session.session_id in args.session_id)):
+                session.print_mounting()
+
+                result = self._run_umount(session)
+                if not result:
+                    return False, session
+
+                result = self._run_dmsetup_remove(session)
+                if not result:
+                    return False, session
+
+                result = self._run_losetup_detach(session)
+                if not result:
+                    return False, session
+
+                result = self._run_fusermount_unmount(session)
+                if not result:
+                    return False, session
+
+                result = self._remove_xmount_cache(session)
+                if not result:
+                    return False, session
+
+                to_remove_sessions.append(session_number)
+
+        for session_number in reversed(to_remove_sessions):
+            del lim_manager.sessions[session_number]
+
+        result = lim_manager.save_json(self.IMAGEINFO_JSON_PATH) if lim_manager.sessions else self._remove_image_info_json(self.IMAGEINFO_JSON_PATH)
+        if not result:
+            return False, None
+
+        print("Unmounting succeeded.")
+
+        return True, None
+
+    def check_status(self) -> bool:
+        if not os.path.exists(self.IMAGEINFO_JSON_PATH):
+            print("No image is mounted.")
+            return True
+
+        lim_manager = LinImageMounterManager()
+        result = lim_manager.load_json(self.IMAGEINFO_JSON_PATH)
+        if not result:
+            return False
+
+        print("Current status:")
+        for idx, session in enumerate(lim_manager.sessions):
+            print(f"[Session Number: {idx + 1}]")
+            session.print_info()
+
+        return True
+
+    def _run_cmd(self, cmd_line: list[str]) -> subprocess.CompletedProcess:
+        debug_print(" ".join(cmd_line))
+        result = subprocess.run(cmd_line, capture_output=True, text=True, encoding="utf-8", check=False)
+        debug_print(f"return code: {result.returncode}")
+        debug_print(f"stdout: {result.stdout}")
+        debug_print(f"stderr: {result.stderr}")
+        return result
+
+    def _run_xmount(self, lim_session: LinImageMounterSession) -> bool:
+        debug_print("===== Run Xmount =====")
+        # Check if the xmount cache dir exists
+        xmount_cache_dir = os.path.abspath(os.path.expanduser("~/.xmount-cache"))
+        if os.path.isfile(xmount_cache_dir):
+            print("xmount cache directory is a file.")
+            return False
+
+        os.makedirs(xmount_cache_dir, exist_ok=True)
+
+        for image_info in lim_session.image_info:
+            xmount_cache_filename = image_info.image_path_hash + "_" + os.path.splitext(os.path.basename(image_info.image))[0] + ".cache"
+            xmount_cache_path = os.path.join(xmount_cache_dir, xmount_cache_filename)
+            image_info.xmount_cache_path = xmount_cache_path
+
+            if os.path.isfile(xmount_cache_path):
+                if not args.reuse_cache:
+                    os.remove(xmount_cache_path)
+                    debug_print(f"Removed xmount cache: {xmount_cache_path}")
+                elif args.reuse_cache:
+                    debug_print(f"Reuse xmount cache: {xmount_cache_path}")
+            else:
+                debug_print(f"xmount cache not found: {xmount_cache_path}")
+
+            # Check if the image exists
+            if not os.path.isfile(image_info.image):
+                print("Disk image file not found.")
+                return False
+
+            # Check if the mountpoint exists and is not mounted
+            if os.path.isfile(image_info.image_mountpoint):
+                print("Mountpoint of the image file is a file.")
+                return False
+
+            os.makedirs(image_info.image_mountpoint, exist_ok=True)
+
+            if os.path.ismount(image_info.image_mountpoint):
+                print("Mountpoint of the image file is already mounted.")
+                return False
+
+            # Mount the image
+            result = self._run_cmd(
+                [self.CMD_XMOUNT, "--in", args.type, image_info.image, "--out", "vmdk", "--cache", xmount_cache_path, image_info.image_mountpoint],
+            )
+            if result.returncode != 0 or not os.path.ismount(image_info.image_mountpoint):
+                print("Failed to run xmount.")
+                return False
+
+        return True
+
+    def _run_kpartx(self, lim_session: LinImageMounterSession) -> bool:
+        debug_print("===== Run Kpartx =====")
+        for image_info in lim_session.image_info:
+            raw_image_filename = os.path.splitext(os.path.basename(image_info.image))[0] + ".dd"
+            xmount_image_path = os.path.join(image_info.image_mountpoint, raw_image_filename)
+            image_info.xmount_image_path = xmount_image_path
+
+            result = self._run_cmd([self.CMD_KPARTX, "-av", xmount_image_path])
+            if result.returncode != 0:
+                print("Failed to run kpartx.")
+                return False
+
+        return True
+
+    def _run_loseup(self, lim_session: LinImageMounterSession, sleeptime=2) -> bool:
+        debug_print("===== Run Losetup =====")
+        # Wait for the device mapper devices to be created
+        time.sleep(sleeptime)
+        result = self._run_cmd([self.CMD_LOSETUP, "--json"])
+        if result.returncode != 0:
+            print("Failed to run losetup.")
+            return False
+
+        data = json.loads(result.stdout)
+        for loopback_device in data["loopdevices"]:
+            for image_info in lim_session.image_info:
+                if loopback_device["back-file"] == image_info.xmount_image_path:
+                    image_info.loopback_device = os.path.basename(loopback_device["name"])
+                    break
+
+        return True
+
+    def _get_dev_map(self) -> dict[str, str]:
+        dev_map: dict[str, str] = {}
+        for file in os.listdir("/dev/mapper"):
+            mapped_device_path = os.path.join("/dev/mapper", file)
+            if file not in ("control",) and os.path.islink(mapped_device_path):
+                dm_name = os.path.basename(os.readlink(mapped_device_path))
+                if file not in dev_map and dm_name.startswith("dm-"):
+                    dev_map[file] = dm_name
+
+        return dev_map
+
+    def _lsblk_recursive(self, device: dict, mount_info: list[MountInfo], dev_map: dict[str, str]) -> None:
+        if device.get("children"):
+            if device["name"] in dev_map:
+                dm_name = dev_map[device["name"]]
+                mount_info.append(MountInfo(device=device["name"], dm_name=dm_name, mountable=False, mountpoint=None, filesystem=""))
+
+            for child in device["children"]:
+                self._lsblk_recursive(child, mount_info, dev_map)
+
+        elif device["name"] in dev_map:
+            devices = [info.device for info in mount_info]
+            if device["name"] not in devices:
+                dm_name = dev_map[device["name"]]
+                mount_info.append(MountInfo(device=device["name"], dm_name=dm_name, mountable=True, mountpoint=None, filesystem=""))
+
+    def _run_lsblk(self, lim_session: LinImageMounterSession) -> bool:
+        debug_print("===== Run Lsblk =====")
+        dev_map = self._get_dev_map()
+
+        result = self._run_cmd([self.CMD_LSBLK, "--json"])
+        if result.returncode != 0:
+            print("Failed to run lsblk.")
+            return False
+
+        data = json.loads(result.stdout)
+        for device in data["blockdevices"]:
+            for image_info in lim_session.image_info:
+                if device["name"] == image_info.loopback_device:
+                    self._lsblk_recursive(device, lim_session.mount_info, dev_map)
+                    break
+
+        return True
+
+    def _run_blkid(self, lim_session: LinImageMounterSession) -> bool:
+        debug_print("===== Run Blkid =====")
+        result = self._run_cmd([self.CMD_BLKID])
+        if result.returncode != 0:
+            print("Failed to run blkid.")
+            return False
+
+        for mount_info in lim_session.mount_info:
+            for line in result.stdout.splitlines():
+                device = line.split(": ")[0]
+                device_info = line.split(": ")[1]
+                try:
+                    if device.endswith(mount_info.device):
+                        mount_info.filesystem = {k: v.strip('"') for k, v in [field.split("=") for field in device_info.split()]}["TYPE"]
+                        if mount_info.filesystem.startswith("fat"):
+                            mount_info.filesystem = "vfat"
+                        elif mount_info.filesystem in ("swap", "LVM2_member"):
+                            mount_info.mountable = False
+                        debug_print(f"Device: {device}, Filesystem: {mount_info.filesystem}, Mountable: {mount_info.mountable}")
+                        break
+                except KeyError:
+                    debug_print(f"'{line}' has no TYPE field.")
+                    continue
+
+        return True
+
+    def _run_mount(self, lim_session: LinImageMounterSession) -> bool:
+        debug_print("===== Run Mount =====")
+        for mount_info in lim_session.mount_info:
+            if mount_info.mountable and mount_info.mountpoint is None:
+                dm_path = os.path.join("/dev", mount_info.dm_name)
+                device_mountpoint = os.path.join(lim_session.mountpoint_base, mount_info.device)
+
+                if os.path.isfile(device_mountpoint):
+                    print(f"Mountpoint {device_mountpoint} is a file.")
+                    return False
+
+                os.makedirs(device_mountpoint, exist_ok=True)
+
+                mount_option = "rw" if args.read_write else "ro"
+                result = self._run_cmd([self.CMD_MOUNT, "-t", mount_info.filesystem, "-o", mount_option, dm_path, device_mountpoint])
+                if result.returncode != 0 or not os.path.ismount(device_mountpoint):
+                    print(f"Failed to mount {dm_path} to {device_mountpoint}.")
+                    return False
+
+                mount_info.mountpoint = device_mountpoint
+
+        return True
+
+    def _run_umount(self, lim_session: LinImageMounterSession) -> bool:
+        debug_print("===== Run Umount =====")
+        for mount_info in lim_session.mount_info:
+            if mount_info.mountpoint:
+                result = self._run_cmd([self.CMD_UMOUNT, mount_info.mountpoint])
+                if result.returncode != 0:
+                    debug_print(f"Failed to unmount {mount_info.mountpoint}.")
+                    return False
+
+                try:
+                    shutil.rmtree(mount_info.mountpoint)
+                    debug_print(f"Removed mountpoint: {mount_info.mountpoint}")
+                except OSError as e:
+                    print(f"Failed to remove a mountpoint {mount_info.mountpoint}: {e}")
+                    return False
+
+        return True
+
+    def _run_dmsetup_remove(self, lim_session: LinImageMounterSession) -> bool:
+        debug_print("===== Run Dmsetup Remove =====")
+        reverse_mount_info = sorted(lim_session.mount_info, key=lambda x: x.dm_name, reverse=True)
+        for mount_info in reverse_mount_info:
+            device_map_path = os.path.join("/dev", mount_info.dm_name)
+            result = self._run_cmd([self.CMD_DMSETUP, "remove", device_map_path])
+            if result.returncode != 0:
+                print(f"Failed to remove device map {device_map_path}.")
+                return False
+
+        return True
+
+    def _run_losetup_detach(self, lim_session: LinImageMounterSession) -> bool:
+        debug_print("===== Run Losetup Detach =====")
+        for image_info in lim_session.image_info:
+            loopback_device_path = os.path.join("/dev", image_info.loopback_device)
+            result = self._run_cmd([self.CMD_LOSETUP, "-d", loopback_device_path])
+            if result.returncode != 0:
+                print(f"Failed to detach loopback device {loopback_device_path}.")
+                return False
+
+        return True
+
+    def _run_fusermount_unmount(self, lim_session: LinImageMounterSession) -> bool:
+        debug_print("===== Run Fusermount Unmount =====")
+        for image_info in lim_session.image_info:
+            result = self._run_cmd([self.CMD_FUSERMOUNT, "-u", image_info.image_mountpoint])
+            if result.returncode != 0:
+                print(f"Failed to unmount {image_info.image_mountpoint}.")
+                return False
+
+            try:
+                shutil.rmtree(image_info.image_mountpoint)
+                print(f"Removed image mountpoint: {image_info.image_mountpoint}")
+            except OSError as e:
+                print(f"Failed to remove image mountpoint {image_info.image_mountpoint}: {e}")
+                return False
+
+        return True
+
+    def _remove_xmount_cache(self, lim_session: LinImageMounterSession) -> bool:
+        debug_print("===== Remove Xmount Cache =====")
+        try:
+            for image_info in lim_session.image_info:
+                if os.path.isfile(image_info.xmount_cache_path):
+                    if not args.reuse_cache:
+                        os.remove(image_info.xmount_cache_path)
+                        debug_print(f"Removed xmount cache: {image_info.xmount_cache_path}")
+                    else:
+                        debug_print(f"Keep xmount cache: {image_info.xmount_cache_path}")
+                else:
+                    debug_print(f"xmount cache not found: {image_info.xmount_cache_path}")
+
+        except OSError as e:
+            print(f"Failed to remove xmount cache directory: {e}")
+            return False
+        else:
+            return True
+
+    def _remove_image_info_json(self, image_info_json_path: str) -> bool:
+        debug_print("===== Remove Image Info JSON =====")
+        try:
+            os.remove(os.path.abspath(os.path.expanduser(image_info_json_path)))
+            debug_print(f"Removed image info JSON file: {image_info_json_path}")
+        except OSError as e:
+            print(f"Failed to remove image info JSON file: {e}")
+            return False
+        else:
+            return True
+
+
+def comma_separated_integers(value: str) -> list[int]:
+    try:
+        return [int(v.strip()) for v in value.split(",")]
+    except ValueError:
+        raise argparse.ArgumentTypeError("List must be comma-separated integers.")
+
+
+def comma_separated_strings(value: str) -> list[str]:
+    try:
+        return [v.strip() for v in value.split(",")]
+    except ValueError:
+        raise argparse.ArgumentTypeError("List must be comma-separated strings.")
 
 
 def parse_arguments() -> argparse.Namespace:
@@ -194,6 +639,18 @@ def parse_arguments() -> argparse.Namespace:
         default=False,
         help="Reuse/Keep the xmount cache file when the 'mount'/'unmount' command is executed. (Default: False)",
     )
+    parser.add_argument(
+        "--session-no",
+        type=comma_separated_integers,
+        default=[],
+        help="Specify comma-separated session numbers to unmount.",
+    )
+    parser.add_argument(
+        "--session-id",
+        type=comma_separated_strings,
+        default=[],
+        help="Specify comma-separated session ids to unmount.",
+    )
     # parser.add_argument("--force", action="store_true", default=False, help="Force the command to execute. (Default: False)")
     parser.add_argument("--debug", action="store_true", default=False, help="Enable debug mode. (Default: False)")
     parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {VERSION}")
@@ -213,424 +670,26 @@ def check_root_privilege() -> bool:
     return os.geteuid() == 0
 
 
-def check_dependencies() -> bool:
-    dependencies = (CMD_XMOUNT, CMD_KPARTX, CMD_LOSETUP, CMD_LSBLK, CMD_BLKID, CMD_MOUNT, CMD_UMOUNT, CMD_DMSETUP, CMD_FUSERMOUNT)
-    check_results: list[bool] = []
-    for dependency in dependencies:
-        exist = os.path.isfile(dependency)
-        if not exist:
-            print(f"Dependency not found: {dependency}")
-        check_results.append(exist)
-
-    return all(check_results)
-
-
-def run_cmd(cmd_line: list[str]) -> subprocess.CompletedProcess:
-    debug_print(" ".join(cmd_line))
-    result = subprocess.run(cmd_line, capture_output=True, text=True, encoding="utf-8", check=False)
-    debug_print(f"return code: {result.returncode}")
-    debug_print(f"stdout: {result.stdout}")
-    debug_print(f"stderr: {result.stderr}")
-    return result
-
-
-def run_xmount(linimagemounter: LinImageMounter) -> bool:
-    debug_print("===== Run Xmount =====")
-    # Check if the xmount cache dir exists
-    xmount_cache_dir = os.path.abspath(os.path.expanduser("~/.xmount-cache"))
-    if os.path.isfile(xmount_cache_dir):
-        print("xmount cache directory is a file.")
-        return False
-
-    os.makedirs(xmount_cache_dir, exist_ok=True)
-
-    for image_info in linimagemounter.image_info:
-        xmount_cache_filename = image_info.image_path_hash + "_" + os.path.splitext(os.path.basename(image_info.image))[0] + ".cache"
-        xmount_cache_path = os.path.join(xmount_cache_dir, xmount_cache_filename)
-        image_info.xmount_cache_path = xmount_cache_path
-
-        if os.path.isfile(xmount_cache_path):
-            if not args.reuse_cache:
-                os.remove(xmount_cache_path)
-                debug_print(f"Removed xmount cache: {xmount_cache_path}")
-            elif args.reuse_cache:
-                debug_print(f"Reuse xmount cache: {xmount_cache_path}")
-        else:
-            debug_print(f"xmount cache not found: {xmount_cache_path}")
-
-        # Check if the image exists
-        if not os.path.isfile(image_info.image):
-            print("Disk image file not found.")
-            return False
-
-        # Check if the mountpoint exists and is not mounted
-        if os.path.isfile(image_info.image_mountpoint):
-            print("Mountpoint of the image file is a file.")
-            return False
-
-        os.makedirs(image_info.image_mountpoint, exist_ok=True)
-
-        if os.path.ismount(image_info.image_mountpoint):
-            print("Mountpoint of the image file is already mounted.")
-            return False
-
-        # Mount the image
-        result = run_cmd(
-            [CMD_XMOUNT, "--in", args.type, image_info.image, "--out", "vmdk", "--cache", xmount_cache_path, image_info.image_mountpoint],
-        )
-        if result.returncode != 0 or not os.path.ismount(image_info.image_mountpoint):
-            print("Failed to run xmount.")
-            return False
-
-    return True
-
-
-def run_kpartx(linimagemounter: LinImageMounter) -> bool:
-    debug_print("===== Run Kpartx =====")
-    for image_info in linimagemounter.image_info:
-        raw_image_filename = os.path.splitext(os.path.basename(image_info.image))[0] + ".dd"
-        xmount_image_path = os.path.join(image_info.image_mountpoint, raw_image_filename)
-        image_info.xmount_image_path = xmount_image_path
-
-        result = run_cmd([CMD_KPARTX, "-av", xmount_image_path])
-        if result.returncode != 0:
-            print("Failed to run kpartx.")
-            return False
-
-    return True
-
-
-def run_loseup(linimagemounter: LinImageMounter, sleeptime=2) -> bool:
-    debug_print("===== Run Losetup =====")
-    # Wait for the device mapper devices to be created
-    time.sleep(sleeptime)
-    result = run_cmd([CMD_LOSETUP, "--json"])
-    if result.returncode != 0:
-        print("Failed to run losetup.")
-        return False
-
-    data = json.loads(result.stdout)
-    for loopback_device in data["loopdevices"]:
-        for image_info in linimagemounter.image_info:
-            if loopback_device["back-file"] == image_info.xmount_image_path:
-                image_info.loopback_device = os.path.basename(loopback_device["name"])
-                break
-
-    return True
-
-
-def _get_dev_map() -> dict[str, str]:
-    dev_map: dict[str, str] = {}
-    for file in os.listdir("/dev/mapper"):
-        mapped_device_path = os.path.join("/dev/mapper", file)
-        if file not in ("control",) and os.path.islink(mapped_device_path):
-            dm_name = os.path.basename(os.readlink(mapped_device_path))
-            if file not in dev_map and dm_name.startswith("dm-"):
-                dev_map[file] = dm_name
-
-    return dev_map
-
-
-def _lsblk_recursive(device: dict, mount_info: list[MountInfo], dev_map: dict[str, str]) -> None:
-    if device.get("children"):
-        if device["name"] in dev_map:
-            dm_name = dev_map[device["name"]]
-            mount_info.append(MountInfo(device=device["name"], dm_name=dm_name, mountable=False, mountpoint=None, filesystem=""))
-
-        for child in device["children"]:
-            _lsblk_recursive(child, mount_info, dev_map)
-
-    elif device["name"] in dev_map:
-        devices = [info.device for info in mount_info]
-        if device["name"] not in devices:
-            dm_name = dev_map[device["name"]]
-            mount_info.append(MountInfo(device=device["name"], dm_name=dm_name, mountable=True, mountpoint=None, filesystem=""))
-
-
-def run_lsblk(linimagemounter: LinImageMounter) -> bool:
-    debug_print("===== Run Lsblk =====")
-    dev_map = _get_dev_map()
-
-    result = run_cmd([CMD_LSBLK, "--json"])
-    if result.returncode != 0:
-        print("Failed to run lsblk.")
-        return False
-
-    data = json.loads(result.stdout)
-    for device in data["blockdevices"]:
-        for image_info in linimagemounter.image_info:
-            if device["name"] == image_info.loopback_device:
-                _lsblk_recursive(device, linimagemounter.mount_info, dev_map)
-                break
-
-    return True
-
-
-def run_blkid(linimagemounter: LinImageMounter) -> bool:
-    debug_print("===== Run Blkid =====")
-    result = run_cmd([CMD_BLKID])
-    if result.returncode != 0:
-        print("Failed to run blkid.")
-        return False
-
-    for mount_info in linimagemounter.mount_info:
-        for line in result.stdout.splitlines():
-            device = line.split(": ")[0]
-            device_info = line.split(": ")[1]
-            try:
-                if device.endswith(mount_info.device):
-                    mount_info.filesystem = {k: v.strip('"') for k, v in [field.split("=") for field in device_info.split()]}["TYPE"]
-                    if mount_info.filesystem.startswith("fat"):
-                        mount_info.filesystem = "vfat"
-                    elif mount_info.filesystem in ("swap",):
-                        mount_info.mountable = False
-                    debug_print(f"Device: {device}, Filesystem: {mount_info.filesystem}, Mountable: {mount_info.mountable}")
-                    break
-            except KeyError:
-                debug_print(f"'{line}' has no TYPE field.")
-                continue
-
-    return True
-
-
-def run_mount(linimagemounter: LinImageMounter) -> bool:
-    debug_print("===== Run Mount =====")
-    for mount_info in linimagemounter.mount_info:
-        if mount_info.mountable and mount_info.mountpoint is None:
-            dm_path = os.path.join("/dev", mount_info.dm_name)
-            device_mountpoint = os.path.join(linimagemounter.mountpoint_base, mount_info.device)
-
-            if os.path.isfile(device_mountpoint):
-                print(f"Mountpoint {device_mountpoint} is a file.")
-                return False
-
-            os.makedirs(device_mountpoint, exist_ok=True)
-
-            mount_option = "rw" if args.read_write else "ro"
-            result = run_cmd([CMD_MOUNT, "-t", mount_info.filesystem, "-o", mount_option, dm_path, device_mountpoint])
-            if result.returncode != 0 or not os.path.ismount(device_mountpoint):
-                print(f"Failed to mount {dm_path} to {device_mountpoint}.")
-                return False
-
-            mount_info.mountpoint = device_mountpoint
-
-    return True
-
-
-def mount_image(images: list[str], mountpoint_base: str) -> tuple[bool, LinImageMounter | None]:
-    if os.path.isfile(IMAGEINFO_JSON_PATH):
-        print("Image is already mounted.")
-        return False, None
-
-    image_info = []
-    for image in images:
-        image_path_hash = hashlib.sha1(image.encode()).hexdigest()
-        image_mountpoint = os.path.join(mountpoint_base, os.path.join("_images", image_path_hash))
-        image_info.append(
-            ImageInfo(
-                image=image,
-                image_path_hash=image_path_hash,
-                image_mountpoint=image_mountpoint,
-                xmount_image_path="",
-                xmount_cache_path="",
-                loopback_device="",
-            ),
-        )
-
-    linimagemounter = LinImageMounter(mountpoint_base=mountpoint_base, image_info=image_info, mount_info=[])
-
-    result = run_xmount(linimagemounter)
-    if not result:
-        return False, linimagemounter
-
-    result = run_kpartx(linimagemounter)
-    if not result:
-        return False, linimagemounter
-
-    result = run_loseup(linimagemounter)
-    if not result:
-        return False, linimagemounter
-
-    result = run_lsblk(linimagemounter)
-    if not result:
-        return False, linimagemounter
-
-    result = run_blkid(linimagemounter)
-    if not result:
-        return False, linimagemounter
-
-    result = run_mount(linimagemounter)
-    if not result:
-        return False, linimagemounter
-
-    result = linimagemounter.save_json(IMAGEINFO_JSON_PATH)
-    if not result:
-        return False, linimagemounter
-
-    print("Mounting info:")
-    for mount_info in linimagemounter.mount_info:
-        mount_info.print_mounting()
-    print("Mounting succeeded.")
-
-    return True, linimagemounter
-
-
-def run_umount(linimagemounter: LinImageMounter) -> bool:
-    debug_print("===== Run Umount =====")
-    for info in linimagemounter.mount_info:
-        if info.mountpoint:
-            result = run_cmd([CMD_UMOUNT, info.mountpoint])
-            if result.returncode != 0:
-                print(f"Failed to unmount {info.mountpoint}.")
-                return False
-
-    return True
-
-
-def run_dmsetup_remove(linimagemounter: LinImageMounter) -> bool:
-    debug_print("===== Run Dmsetup Remove =====")
-    reverse_mount_info = sorted(linimagemounter.mount_info, key=lambda x: x.dm_name, reverse=True)
-    for info in reverse_mount_info:
-        device_map_path = os.path.join("/dev", info.dm_name)
-        result = run_cmd([CMD_DMSETUP, "remove", device_map_path])
-        if result.returncode != 0:
-            print(f"Failed to remove device map {device_map_path}.")
-            return False
-
-    return True
-
-
-def run_losetup_detach(linimagemounter: LinImageMounter) -> bool:
-    debug_print("===== Run Losetup Detach =====")
-    for image_info in linimagemounter.image_info:
-        loopback_device_path = os.path.join("/dev", image_info.loopback_device)
-        result = run_cmd([CMD_LOSETUP, "-d", loopback_device_path])
-        if result.returncode != 0:
-            print(f"Failed to detach loopback device {loopback_device_path}.")
-            return False
-
-    return True
-
-
-def run_fusermount_unmount(linimagemounter: LinImageMounter) -> bool:
-    debug_print("===== Run Fusermount Unmount =====")
-    for image_info in linimagemounter.image_info:
-        result = run_cmd([CMD_FUSERMOUNT, "-u", image_info.image_mountpoint])
-        if result.returncode != 0:
-            print(f"Failed to unmount {image_info.image_mountpoint}.")
-            return False
-
-    try:
-        shutil.rmtree(linimagemounter.mountpoint_base)
-    except OSError as e:
-        print(f"Failed to remove mountpoint base {linimagemounter.mountpoint_base}: {e}")
-        return False
-    else:
-        return True
-
-
-def remove_xmount_cache(linimagemounter: LinImageMounter) -> bool:
-    debug_print("===== Remove Xmount Cache =====")
-    try:
-        for image_info in linimagemounter.image_info:
-            if os.path.isfile(image_info.xmount_cache_path):
-                if not args.reuse_cache:
-                    os.remove(image_info.xmount_cache_path)
-                    debug_print(f"Removed xmount cache: {image_info.xmount_cache_path}")
-                else:
-                    debug_print(f"Keep xmount cache: {image_info.xmount_cache_path}")
-            else:
-                debug_print(f"xmount cache not found: {image_info.xmount_cache_path}")
-
-    except OSError as e:
-        print(f"Failed to remove xmount cache directory: {e}")
-        return False
-    else:
-        return True
-
-
-def remove_image_info_json(image_info_json_path: str) -> bool:
-    debug_print("===== Remove Image Info JSON =====")
-    try:
-        os.remove(os.path.abspath(os.path.expanduser(image_info_json_path)))
-        debug_print(f"Removed image info JSON file: {image_info_json_path}")
-    except OSError as e:
-        print(f"Failed to remove image info JSON file: {e}")
-        return False
-    else:
-        return True
-
-
-def unmount_image() -> tuple[bool, LinImageMounter | None]:
-    linimagemounter = LinImageMounter(mountpoint_base="", image_info=[], mount_info=[])
-    result = linimagemounter.load_json(IMAGEINFO_JSON_PATH)
-    if not result:
-        return False, None
-
-    print("Mounting info:")
-    for mount_info in linimagemounter.mount_info:
-        mount_info.print_mounting()
-
-    result = run_umount(linimagemounter)
-    if not result:
-        return False, linimagemounter
-
-    result = run_dmsetup_remove(linimagemounter)
-    if not result:
-        return False, linimagemounter
-
-    result = run_losetup_detach(linimagemounter)
-    if not result:
-        return False, linimagemounter
-
-    result = run_fusermount_unmount(linimagemounter)
-    if not result:
-        return False, linimagemounter
-
-    result = remove_xmount_cache(linimagemounter)
-    if not result:
-        return False, linimagemounter
-
-    result = remove_image_info_json(IMAGEINFO_JSON_PATH)
-    if not result:
-        return False, linimagemounter
-
-    print("Unmounting succeeded.")
-
-    return True, linimagemounter
-
-
-def check_status() -> bool:
-    if not os.path.exists(IMAGEINFO_JSON_PATH):
-        print("No image is mounted.")
-        return True
-
-    linimagemounter = LinImageMounter(mountpoint_base="", image_info=[], mount_info=[])
-    result = linimagemounter.load_json(IMAGEINFO_JSON_PATH)
-    if not result:
-        return False
-
-    print("Current status:")
-    linimagemounter.print_info()
-
-    return True
-
-
 def main() -> None:
     if not platform_is_linux():
         print("This script only supports Linux.")
+        sys.exit(1)
+
+    if args.session_no and args.session_id:
+        print("Can not specify both session number and session id.")
         sys.exit(1)
 
     if not check_root_privilege():
         print("This script requires root privilege.")
         sys.exit(1)
 
-    if not check_dependencies():
+    lim_manager = LinImageMounterManager()
+    if not lim_manager.check_dependencies():
         print("Please install the required dependencies.")
         sys.exit(1)
 
     result = False
-    linimagemounter = None
+    lim_session = None
     if args.command == "mount":
         if not args.image:
             print("Disk image file is required.")
@@ -643,19 +702,19 @@ def main() -> None:
             if full_path not in seen_images:
                 seen_images.add(full_path)
         args.mountpoint_base = os.path.abspath(os.path.expanduser(args.mountpoint_base))
-        result, linimagemounter = mount_image(list(seen_images), args.mountpoint_base)
+        result, lim_session = lim_manager.mount_image(list(seen_images), args.mountpoint_base)
     elif args.command == "unmount":
-        result, linimagemounter = unmount_image()
+        result, lim_session = lim_manager.unmount_image()
     elif args.command == "status":
-        result = check_status()
+        result = lim_manager.check_status()
     else:
         print("Invalid command.")
         sys.exit(1)
 
     if not result:
         print("Failed to execute the command.")
-        if args.debug and linimagemounter is not None:
-            linimagemounter.print_info()
+        if args.debug and lim_session is not None:
+            lim_session.print_info()
         sys.exit(1)
 
     sys.exit(0)
