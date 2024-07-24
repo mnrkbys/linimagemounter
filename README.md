@@ -63,7 +63,13 @@ Contributions are encouraged! If you wish to contribute, please fork the reposit
 - Logical volumes in a disk image that contain mounted logical volume names cannot be mounted.
 - Currently, LinImageMounter does NOT support LUKS, eCryptfs, software RAID (mdadm), and so on.
 
-## Testing
+## Tested filesystem
+
+- ext4
+- XFS on LVM
+- Btrfs (single disk and RAID 1)
+
+## Testing Environment
 
 Please note that testing has been conducted exclusively on the [SANS SIFT Workstation](https://www.sans.org/tools/sift-workstation/) environment. Compatibility with other environments has not been verified.
 
