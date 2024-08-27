@@ -31,7 +31,7 @@ import sys
 import time
 import uuid
 
-VERSION = "20240729"
+VERSION = "20240827"
 
 
 class MountInfo:
@@ -541,7 +541,12 @@ class LinImageMounterManager:
 
                 os.makedirs(device_mountpoint, exist_ok=True)
 
-                mount_option = "rw" if args.read_write else "ro"
+                mount_option = "rw" if args.read_write else "ro,noatime,noexec,nodev,nosuid"
+                if args.noload:
+                    if mount_info.filesystem in ("ext3", "ext4"):
+                        mount_option += ",noload"
+                    elif mount_info.filesystem in ("btrfs", "xfs"):
+                        mount_option += ",norecovery"
                 result = self._run_cmd([self.cmds["MOUNT"], "-t", mount_info.filesystem, "-o", mount_option, device_path, device_mountpoint])
                 if result.returncode != 0 or not os.path.ismount(device_mountpoint):
                     print(f"Failed to mount {device_path} to {device_mountpoint}.")
@@ -694,7 +699,8 @@ def parse_arguments() -> argparse.Namespace:
         "--image",
         type=str,
         nargs="+",
-        help="Path to the disk image file. Required for the 'mount' command.")
+        help="Path to the disk image file. Required for the 'mount' command.",
+    )
     parser.add_argument(
         "--mountpoint-base",
         type=str,
@@ -706,7 +712,14 @@ def parse_arguments() -> argparse.Namespace:
         "--read-write",
         action="store_true",
         default=False,
-        help="Mount the image in read-write mode. (Default: False)")
+        help="Mount the image in read-write mode. (Default: False)",
+    )
+    parser.add_argument(
+        "--noload",
+        action="store_true",
+        default=False,
+        help="Do not replay the filesystem journal. If filesystem is ext3/4, adds 'noload' option when mounting. Similarly, for Btrfs and XFS, adds 'norecovery' option. (Default: False)",
+    )
     parser.add_argument(
         "--reuse-cache",
         action="store_true",
@@ -730,12 +743,14 @@ def parse_arguments() -> argparse.Namespace:
         "--debug",
         action="store_true",
         default=False,
-        help="Enable debug mode. (Default: False)")
+        help="Enable debug mode. (Default: False)",
+    )
     parser.add_argument(
         "-v",
         "--version",
         action="version",
-        version=f"%(prog)s {VERSION}")
+        version=f"%(prog)s {VERSION}",
+    )
     return parser.parse_args()
 
 
