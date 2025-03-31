@@ -3,7 +3,7 @@
 # linimagemounter.py
 # Linux Image Mounter can mount Linux disk image files on Linux for forensics.
 #
-# Copyright 2024 Minoru Kobayashi <unknownbit@gmail.com> (@unkn0wnbit)
+# Copyright 2024-2025 Minoru Kobayashi <unknownbit@gmail.com> (@unkn0wnbit)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -25,13 +25,14 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
 import time
 import uuid
 
-VERSION = "20240827"
+VERSION = "20250331"
 
 
 class MountInfo:
@@ -145,6 +146,8 @@ class LinImageMounterManager:
             "XMOUNT": "xmount",
             "KPARTX": "kpartx",
             "LOSETUP": "losetup",
+            "VGSCAN": "vgscan",
+            "VGCHANGE": "vgchange",
             "LSBLK": "lsblk",
             "BLKID": "blkid",
             "BTRFS": "btrfs",
@@ -246,7 +249,11 @@ class LinImageMounterManager:
         if not result:
             return False, self.current_session
 
-        result = self._run_loseup()
+        result = self._run_losetup()
+        if not result:
+            return False, self.current_session
+
+        result = self._run_vgscan_vgchange()
         if not result:
             return False, self.current_session
 
@@ -414,7 +421,7 @@ class LinImageMounterManager:
 
         return True
 
-    def _run_loseup(self, sleeptime=2) -> bool:
+    def _run_losetup(self, sleeptime=2) -> bool:
         debug_print("===== Run Losetup =====")
         # Wait for the device mapper devices to be created
         time.sleep(sleeptime)
@@ -429,6 +436,22 @@ class LinImageMounterManager:
                 if loopback_device["back-file"] == image_info.xmount_image_path:
                     image_info.loopback_device = os.path.basename(loopback_device["name"])
                     break
+
+        return True
+
+    def _run_vgscan_vgchange(self) -> bool:
+        debug_print("===== Run Vgscan/Vgchange =====")
+        result = self._run_cmd([self.cmds["VGSCAN"]])
+        if result.returncode != 0:
+            print("Failed to run vgscan.")
+            return False
+
+        vg_names = re.findall(r'Found volume group "([^"]+)"', result.stdout)
+        for vg_name in vg_names:
+            result = self._run_cmd([self.cmds["VGCHANGE"], "-ay", vg_name])
+            if result.returncode != 0:
+                print(f"Failed to run vgchange on {vg_name}.")
+                return False
 
         return True
 
