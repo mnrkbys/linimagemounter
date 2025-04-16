@@ -32,7 +32,7 @@ import sys
 import time
 import uuid
 
-VERSION = "20250331"
+VERSION = "20250416"
 
 
 class MountInfo:
@@ -514,11 +514,12 @@ class LinImageMounterManager:
 
         for mount_info in self.current_session.mount_info:
             for line in result.stdout.splitlines():
-                device = line.split(": ")[0]
-                device_info = line.split(": ")[1]
+                device, device_info = line.split(": ")
                 try:
                     if device.endswith(mount_info.device):
-                        mount_info.filesystem = {k: v.strip('"') for k, v in [field.split("=") for field in device_info.split()]}["TYPE"]
+                        debug_print(f"Device: {device}")
+                        debug_print(f"Device_info: {device_info}")
+                        mount_info.filesystem = {k: v.strip('"') for k, v in [field.split("=") for field in device_info.split() if "=" in field]}["TYPE"]
                         if mount_info.filesystem.startswith("fat"):
                             mount_info.filesystem = "vfat"
                         elif mount_info.filesystem in ("swap", "LVM2_member"):
@@ -527,6 +528,7 @@ class LinImageMounterManager:
                         break
                 except KeyError:
                     debug_print(f"'{line}' has no TYPE field.")
+                    mount_info.mountable = False
                     continue
 
         return True
