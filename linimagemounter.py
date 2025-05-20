@@ -32,7 +32,7 @@ import sys
 import time
 import uuid
 
-VERSION = "20250416"
+VERSION = "20250520"
 
 
 class MountInfo:
@@ -149,7 +149,7 @@ class LinImageMounterManager:
             "VGSCAN": "vgscan",
             "VGCHANGE": "vgchange",
             "LSBLK": "lsblk",
-            "BLKID": "blkid",
+            # "BLKID": "blkid",
             "BTRFS": "btrfs",
             "MOUNT": "mount",
             "UMOUNT": "umount",
@@ -261,9 +261,9 @@ class LinImageMounterManager:
         if not result:
             return False, self.current_session
 
-        result = self._run_blkid()
-        if not result:
-            return False, self.current_session
+        # result = self._run_blkid()
+        # if not result:
+        #     return False, self.current_session
 
         result = self._run_mount()
         if not result:
@@ -283,12 +283,12 @@ class LinImageMounterManager:
         return True, self.current_session
 
     def unmount_image(self) -> tuple[bool, LinImageMounterSession | None]:
-        if not self.force_unmount:
+        if args.command == "unmount":
             result = self.load_json(self.LIM_JSON_PATH)
             sessions = self.sessions
             if not result:
                 return False, None
-        else:
+        else:  # This condition is for if the mount process fails.
             sessions = [self.current_session]
 
         if not self.force_unmount:
@@ -324,7 +324,7 @@ class LinImageMounterManager:
         for session_number in reversed(to_remove_sessions):
             del sessions[session_number]
 
-        if not self.force_unmount:
+        if args.command == "unmount":
             result = self.save_json(self.LIM_JSON_PATH) if sessions else self._remove_image_info_json(self.LIM_JSON_PATH)
             if not result:
                 return False, None
@@ -466,12 +466,15 @@ class LinImageMounterManager:
 
         return dev_map
 
-    def _lsblk_recursive(self, device: dict, mount_info: list[MountInfo], dev_map: dict[str, str]) -> None:
+    def _lsblk_recursive(self, device: dict, mount_info: list[MountInfo], dev_map: dict[str, str]) -> bool:
         debug_print("===== Lsblk Recursive =====")
+        debug_print(f"Device: {device['name']}")
+        mi = None
         if device.get("children"):
+            debug_print(f"{device['name']} has children.")
             if device["name"] in dev_map:
                 dm_name = dev_map[device["name"]]
-                mount_info.append(MountInfo(device=device["name"], dm_name=dm_name, mountable=False, mountpoint=None, filesystem=""))
+                mi = MountInfo(device=device["name"], dm_name=dm_name, mountable=False, mountpoint=None, filesystem="")
 
             for child in device["children"]:
                 self._lsblk_recursive(child, mount_info, dev_map)
@@ -480,18 +483,33 @@ class LinImageMounterManager:
             devices = [mount_info.device for mount_info in mount_info]
             if device["name"] not in devices:
                 dm_name = dev_map[device["name"]]
-                mount_info.append(MountInfo(device=device["name"], dm_name=dm_name, mountable=True, mountpoint=None, filesystem=""))
+                mi = MountInfo(device=device["name"], dm_name=dm_name, mountable=True, mountpoint=None, filesystem="")
 
         elif device["name"] not in dev_map:
             devices = [mount_info.device for mount_info in mount_info]
             if device["name"] not in devices:
-                mount_info.append(MountInfo(device=device["name"], dm_name="", mountable=True, mountpoint=None, filesystem=""))
+                mi = MountInfo(device=device["name"], dm_name="", mountable=True, mountpoint=None, filesystem="")
+
+        if mi:
+            if fstype := device.get("fstype"):
+                if fstype.startswith("fat"):
+                    fstype = "vfat"
+                elif fstype in ("swap", "LVM2_member"):
+                    mi.mountable = False
+                mi.filesystem = fstype
+            else:
+                debug_print(f"'{device['name']}' has no fstype field.")
+                return False
+            debug_print(f"Device: {device['name']}, Dm_name: {mi.dm_name}, Mountable: {mi.mountable}, Filesystem: {mi.filesystem}")
+            mount_info.append(mi)
+
+        return True
 
     def _run_lsblk(self) -> bool:
         debug_print("===== Run Lsblk =====")
         dev_map = self._get_dev_map()
 
-        result = self._run_cmd([self.cmds["LSBLK"], "--json"])
+        result = self._run_cmd([self.cmds["LSBLK"], "--fs", "--json"])
         if result.returncode != 0:
             print("Failed to run lsblk.")
             return False
@@ -500,38 +518,39 @@ class LinImageMounterManager:
         for device in data["blockdevices"]:
             for image_info in self.current_session.image_info:
                 if device["name"] == image_info.loopback_device:
-                    self._lsblk_recursive(device, self.current_session.mount_info, dev_map)
-                    break
-
-        return True
-
-    def _run_blkid(self) -> bool:
-        debug_print("===== Run Blkid =====")
-        result = self._run_cmd([self.cmds["BLKID"]])
-        if result.returncode != 0:
-            print("Failed to run blkid.")
-            return False
-
-        for mount_info in self.current_session.mount_info:
-            for line in result.stdout.splitlines():
-                device, device_info = line.split(": ")
-                try:
-                    if device.endswith(mount_info.device):
-                        debug_print(f"Device: {device}")
-                        debug_print(f"Device_info: {device_info}")
-                        mount_info.filesystem = {k: v.strip('"') for k, v in [field.split("=") for field in device_info.split() if "=" in field]}["TYPE"]
-                        if mount_info.filesystem.startswith("fat"):
-                            mount_info.filesystem = "vfat"
-                        elif mount_info.filesystem in ("swap", "LVM2_member"):
-                            mount_info.mountable = False
-                        debug_print(f"Device: {device}, Filesystem: {mount_info.filesystem}, Mountable: {mount_info.mountable}")
+                    if self._lsblk_recursive(device, self.current_session.mount_info, dev_map):
                         break
-                except KeyError:
-                    debug_print(f"'{line}' has no TYPE field.")
-                    mount_info.mountable = False
-                    continue
+                    return False
 
         return True
+
+    # def _run_blkid(self) -> bool:
+    #     debug_print("===== Run Blkid =====")
+    #     result = self._run_cmd([self.cmds["BLKID"]])
+    #     if result.returncode != 0:
+    #         print("Failed to run blkid.")
+    #         return False
+
+    #     for mount_info in self.current_session.mount_info:
+    #         for line in result.stdout.splitlines():
+    #             device, device_info = line.split(": ")
+    #             try:
+    #                 if device.endswith(mount_info.device):
+    #                     debug_print(f"Device: {device}")
+    #                     debug_print(f"Device_info: {device_info}")
+    #                     mount_info.filesystem = {k: v.strip('"') for k, v in [field.split("=") for field in device_info.split() if "=" in field]}["TYPE"]
+    #                     if mount_info.filesystem.startswith("fat"):
+    #                         mount_info.filesystem = "vfat"
+    #                     elif mount_info.filesystem in ("swap", "LVM2_member"):
+    #                         mount_info.mountable = False
+    #                     debug_print(f"Device: {device}, Filesystem: {mount_info.filesystem}, Mountable: {mount_info.mountable}")
+    #                     break
+    #             except KeyError:
+    #                 debug_print(f"'{line}' has no TYPE field.")
+    #                 mount_info.mountable = False
+    #                 continue
+
+    #     return True
 
     def _check_btrfs_filesystem(self, device_path: str) -> list[str]:
         debug_print("===== Check Btrfs Filesystem =====")
@@ -763,7 +782,12 @@ def parse_arguments() -> argparse.Namespace:
         default=[],
         help="Specify comma-separated session ids to unmount.",
     )
-    # parser.add_argument("--force", action="store_true", default=False, help="Force the command to execute. (Default: False)")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Force the command to execute. This option only affects the unmount command. (Default: False)",
+    )
     parser.add_argument(
         "--debug",
         action="store_true",
@@ -826,6 +850,8 @@ def main() -> None:
         args.mountpoint_base = os.path.abspath(os.path.expanduser(args.mountpoint_base))
         result, lim_session = lim_manager.mount_image(list(seen_images), args.mountpoint_base)
     elif args.command == "unmount":
+        if args.force:
+            lim_manager.force_unmount = True
         result, lim_session = lim_manager.unmount_image()
     elif args.command == "status":
         result = lim_manager.check_status()
