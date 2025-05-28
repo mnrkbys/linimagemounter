@@ -32,7 +32,7 @@ import sys
 import time
 import uuid
 
-VERSION = "20250520"
+VERSION = "20250528"
 
 
 class MountInfo:
@@ -147,6 +147,8 @@ class LinImageMounterManager:
             "KPARTX": "kpartx",
             "LOSETUP": "losetup",
             "VGSCAN": "vgscan",
+            "PVS": "pvs",
+            "VGRENAME": "vgrename",
             "VGCHANGE": "vgchange",
             "LSBLK": "lsblk",
             # "BLKID": "blkid",
@@ -159,6 +161,7 @@ class LinImageMounterManager:
 
         self.LIM_JSON_PATH = os.path.abspath(os.path.expanduser("~/.linimagemounter/linimagemounter.json"))
         self.sessions: list[LinImageMounterSession] = []
+        self.current_session: LinImageMounterSession | None = None
         self.force_unmount = False
 
     def check_dependencies(self) -> bool:
@@ -224,6 +227,8 @@ class LinImageMounterManager:
             return True
 
     def mount_image(self, images: list[str], mountpoint_base: str) -> tuple[bool, LinImageMounterSession | None]:
+        self.load_json(self.LIM_JSON_PATH, ignore_failure=True)
+
         image_info: list[ImageInfo] = []
         for image in images:
             image_path_hash = hashlib.sha1(image.encode()).hexdigest()
@@ -269,7 +274,6 @@ class LinImageMounterManager:
         if not result:
             return False, self.current_session
 
-        self.load_json(self.LIM_JSON_PATH, ignore_failure=True)
         self.sessions.append(self.current_session)
 
         result = self.save_json(self.LIM_JSON_PATH)
@@ -329,7 +333,9 @@ class LinImageMounterManager:
             if not result:
                 return False, None
 
-        if result:
+        if self.force_unmount:
+            print("Forced unmount attempt completed.")
+        elif result:
             print("Unmounting succeeded.")
 
         return True, None
@@ -440,14 +446,42 @@ class LinImageMounterManager:
         return True
 
     def _run_vgscan_vgchange(self) -> bool:
-        debug_print("===== Run Vgscan/Vgchange =====")
+        debug_print("===== Run Vgscan/Pvs/Vgrename/Vgchange =====")
         result = self._run_cmd([self.cmds["VGSCAN"]])
         if result.returncode != 0:
             print("Failed to run vgscan.")
             return False
 
-        vg_names = re.findall(r'Found volume group "([^"]+)"', result.stdout)
+        result = self._run_cmd([self.cmds["PVS"], "--reportformat", "json"])
+        if result.returncode != 0:
+            print("Failed to run pvs.")
+            return False
+        data = json.loads(result.stdout)
+        vg_names = []
+        for current_image_info in self.current_session.image_info:
+            for pv in data["report"][0]["pv"]:
+                if re.match(rf"/dev/mapper/({current_image_info.loopback_device})(p\d+)?", pv["pv_name"]) and pv["vg_name"] not in vg_names:
+                    vg_names.append(pv["vg_name"])
+
+        vg_prefix = ""
+        if args.change_vgname is not None:
+            if args.change_vgname != "":
+                vg_prefix = args.change_vgname
+            else:
+                vg_prefix = os.path.splitext(os.path.basename(self.current_session.image_info[0].image))[0]
+
         for vg_name in vg_names:
+            # Rename LVM volume group names if a prefix is specified
+            if vg_prefix:
+                new_vg_name = f"{vg_prefix}_{vg_name}"
+                debug_print(f"Renaming volume group {vg_name} to {new_vg_name}.")
+                result = self._run_cmd([self.cmds["VGRENAME"], "--autobackup", "n", vg_name, new_vg_name])
+                if result.returncode != 0:
+                    print(f"Failed to rename volume group {vg_name} to {new_vg_name}.")
+                    return False
+                vg_name = new_vg_name
+            # Activate the volume group
+            debug_print(f"Activating volume group: {vg_name}")
             result = self._run_cmd([self.cmds["VGCHANGE"], "-ay", vg_name])
             if result.returncode != 0:
                 print(f"Failed to run vgchange on {vg_name}.")
@@ -499,7 +533,7 @@ class LinImageMounterManager:
                 mi.filesystem = fstype
             else:
                 debug_print(f"'{device['name']}' has no fstype field.")
-                return False
+                mi.mountable = False
             debug_print(f"Device: {device['name']}, Dm_name: {mi.dm_name}, Mountable: {mi.mountable}, Filesystem: {mi.filesystem}")
             mount_info.append(mi)
 
@@ -787,6 +821,14 @@ def parse_arguments() -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Force the command to execute. This option only affects the unmount command. (Default: False)",
+    )
+    parser.add_argument(
+        "--change-vgname",
+        type=str,
+        nargs="?",
+        const="",
+        default=None,
+        help="Add a prefix to LVM volume group names. The default prefix is the basename of the disk image file. This option does not require the --rw option. [CAUTION]: This option temporarily modifies the metadata of LVM volume groups when mounting disk images.",
     )
     parser.add_argument(
         "--debug",

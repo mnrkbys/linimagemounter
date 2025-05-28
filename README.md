@@ -60,12 +60,13 @@ Contributions are encouraged! If you wish to contribute, please fork the reposit
 - LinImageMounter is based on `xmount`, and thus only raw DD and EWF (E01) disk images are supported.
 - Since LinImageMounter is designed to only mount Linux disk images, errors may occur when mounting disk images from other operating systems.
 - LinImageMounter depends on some Linux-specific commands and external tools for mounting disk images. Ensure that all necessary dependencies are installed on your system.
-- Logical volumes in a disk image that contain mounted logical volume names cannot be mounted.
-- Currently, LinImageMounter does NOT support LUKS, eCryptfs, software RAID (mdadm), and so on.
+- If the LVM volume group names in a disk image conflict with already mounted ones, they cannot be mounted. The --change-vgname option solves this by renaming them during mounting.
+- Currently, LinImageMounter does not support LUKS, eCryptfs, software RAID (mdadm), or similar technologies.
 
 ## Tested filesystem
 
 - ext4
+- ext4 on LVM
 - XFS on LVM
 - Btrfs (single disk and RAID 1)
 
