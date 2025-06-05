@@ -32,7 +32,7 @@ import sys
 import time
 import uuid
 
-VERSION = "20250528"
+VERSION = "20250605"
 
 
 class MountInfo:
@@ -462,6 +462,10 @@ class LinImageMounterManager:
             for pv in data["report"][0]["pv"]:
                 if re.match(rf"/dev/mapper/({current_image_info.loopback_device})(p\d+)?", pv["pv_name"]) and pv["vg_name"] not in vg_names:
                     vg_names.append(pv["vg_name"])
+
+        if not vg_names:
+            debug_print("No LVM volume groups found.")
+            return True
 
         vg_prefix = ""
         if args.change_vgname is not None:
