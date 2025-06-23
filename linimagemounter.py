@@ -32,7 +32,7 @@ import sys
 import time
 import uuid
 
-VERSION = "20250605"
+VERSION = "20250623"
 
 
 class MountInfo:
@@ -762,7 +762,7 @@ def comma_separated_strings(value: str) -> list[str]:
 
 
 def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(prog="LinImageMounter", description="Mounts Linux disk image files for forensics on Linux.")
+    parser = argparse.ArgumentParser(description="Mounts Linux disk image files for forensics on Linux.")
     parser.add_argument(
         "command",
         type=str,

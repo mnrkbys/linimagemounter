@@ -15,7 +15,7 @@ LinImageMounter is a Python tool designed to simplify the process of mounting di
 
 ## Installation
 
-To install LinImageMounter using the following command:
+Install LinImageMounter using the following command:
 
 ```bash
 git clone https://github.com/mnrkbys/linimagemounter.git
@@ -29,15 +29,17 @@ To mount a disk image, simply run:
 sudo python3 ./linimagemounter.py mount -i /path/to/your/image.E01
 ```
 
-*Note 1: `/mnt/linimagemounter` is the default mount point. You can specify a different mount point if needed.*
-
-*Note 2: Mount-related information is saved in `~/.linimagemounter/linimagemounter.json` (In many cases, saved in `/root/.linimagemounter/linimagemounter.json`).*
+> [!NOTE]
+> By default, /mnt/linimagemounter is used as the base mount point. You can specify another if needed.
 
 Check the current mounting status:
 
 ```bash
 sudo python3 ./linimagemounter.py status
 ```
+
+> [!NOTE]
+> Mount-related information is saved in ~/.linimagemounter/linimagemounter.json. When using sudo, it is often saved under /root/.linimagemounter/.
 
 To unmount the disk image, use:
 
@@ -48,7 +50,7 @@ sudo python3 ./linimagemounter.py unmount
 For more detailed usage instructions and options, refer to the help:
 
 ```bash
-linimagemounter --help
+python3 ./linimagemounter.py --help
 ```
 
 ## Contributing
@@ -57,11 +59,11 @@ Contributions are encouraged! If you wish to contribute, please fork the reposit
 
 ## Limitations
 
+- Currently, LinImageMounter does not support LUKS, eCryptfs, software RAID (mdadm), or similar technologies.
 - LinImageMounter is based on `xmount`, and thus only raw DD and EWF (E01) disk images are supported.
 - Since LinImageMounter is designed to only mount Linux disk images, errors may occur when mounting disk images from other operating systems.
 - LinImageMounter depends on some Linux-specific commands and external tools for mounting disk images. Ensure that all necessary dependencies are installed on your system.
 - If the LVM volume group names in a disk image conflict with already mounted ones, they cannot be mounted. The --change-vgname option solves this by renaming them during mounting.
-- Currently, LinImageMounter does not support LUKS, eCryptfs, software RAID (mdadm), or similar technologies.
 
 ## Tested filesystem
 
